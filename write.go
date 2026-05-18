@@ -32,8 +32,8 @@ func newWriter(g *Graph) *writer {
 func appendAttrs(list ast.StmtList, attrs Attrs) ast.StmtList {
 	for _, name := range attrs.sortedNames() {
 		stmt := &ast.Attr{
-			Field: ast.ID(name),
-			Value: ast.ID(attrs[name]),
+			Field: ast.IDLit(string(name)),
+			Value: ast.IDLit(attrs[name]),
 		}
 		list = append(list, stmt)
 	}
@@ -44,7 +44,7 @@ func (w *writer) newSubGraph(name string) (*ast.SubGraph, error) {
 	sub := w.SubGraphs.SubGraphs[name]
 	w.writtenLocations[sub.Name] = true
 	s := &ast.SubGraph{}
-	s.ID = ast.ID(sub.Name)
+	s.ID = ast.IDLit(sub.Name)
 	s.StmtList = appendAttrs(s.StmtList, sub.Attrs)
 	children := w.Relations.SortedChildren(name)
 	for _, child := range children {
@@ -121,7 +121,7 @@ func (w *writer) Write() (*ast.Graph, error) {
 	t := &ast.Graph{}
 	t.Strict = w.Strict
 	t.Type = ast.GraphType(w.Directed)
-	t.ID = ast.ID(w.Name)
+	t.ID = ast.IDLit(w.Name)
 
 	t.StmtList = appendAttrs(t.StmtList, w.Attrs)
 

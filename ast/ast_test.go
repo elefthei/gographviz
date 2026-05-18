@@ -13,26 +13,27 @@ func TestMakeNodeID(t *testing.T) {
 		{ // TC#1
 			id:   "",
 			port: "",
-			want: NodeID{}},
+			want: NodeID{},
+		},
 		{ // TC#2
 			id:   "id",
 			port: "p1",
-			want: NodeID{"id", Port{"p1", ""}},
+			want: NodeID{ID: IDLit("id"), Port: Port{ID1: IDLit("p1")}},
 		},
 		{ // TC#3
 			id:   "_id",
 			port: "p1:p2",
-			want: NodeID{"_id", Port{"p1", "p2"}},
+			want: NodeID{ID: IDLit("_id"), Port: Port{ID1: IDLit("p1"), ID2: IDLit("p2")}},
 		},
 		{ // TC#4
 			id:   "1id",
 			port: "p1:p2:p3",
-			want: NodeID{"1id", Port{"p1", "p2"}},
+			want: NodeID{ID: IDLit("1id"), Port: Port{ID1: IDLit("p1"), ID2: IDLit("p2")}},
 		},
 		{ // TC#5
 			id:   "?id",
 			port: ":p2:p3",
-			want: NodeID{"?id", Port{"", "p2"}},
+			want: NodeID{ID: IDLit("?id"), Port: Port{ID1: IDLit(""), ID2: IDLit("p2")}},
 		},
 	}
 

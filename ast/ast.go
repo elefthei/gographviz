@@ -45,6 +45,26 @@ type Walkable interface {
 
 type Attrib interface{}
 
+// Pos identifies a source position. Line and Column are 1-based; Offset is
+// the byte offset into the parsed buffer (0-based). The zero value Pos{}
+// represents "no position information" — used by AST nodes that were
+// constructed programmatically rather than parsed.
+type Pos struct {
+	Offset int
+	Line   int
+	Column int
+}
+
+// posFromToken extracts a Pos from a *token.Token (the lexer token type).
+// Kept as an internal helper so the public ast API doesn't expose the
+// internal/token package.
+func posFromToken(t *token.Token) Pos {
+	if t == nil {
+		return Pos{}
+	}
+	return Pos{Offset: t.Pos.Offset, Line: t.Pos.Line, Column: t.Pos.Column}
+}
+
 type Bool bool
 
 const (
@@ -92,12 +112,17 @@ type Graph struct {
 	Strict   bool
 	ID       ID
 	StmtList StmtList
+	// Pos is the position of the graph's identifier when present; zero
+	// otherwise (the grammar does not currently surface the leading
+	// `graph`/`digraph` keyword position to this constructor).
+	Pos Pos
 }
 
 func NewGraph(t, strict, id, l Attrib) (*Graph, error) {
-	g := &Graph{Type: t.(GraphType), Strict: bool(strict.(Bool)), ID: ID("")}
+	g := &Graph{Type: t.(GraphType), Strict: bool(strict.(Bool)), ID: ID{}}
 	if id != nil {
 		g.ID = id.(ID)
+		g.Pos = g.ID.Pos
 	}
 	if l != nil {
 		g.StmtList = l.(StmtList)
@@ -189,14 +214,16 @@ func (this *Attr) isStmt()      {}
 type SubGraph struct {
 	ID       ID
 	StmtList StmtList
+	Pos      Pos
 }
 
 func NewSubGraph(maybeId, l Attrib) (*SubGraph, error) {
 	g := &SubGraph{}
-	if id, ok := maybeId.(ID); maybeId == nil || (ok && len(id) == 0) {
-		g.ID = ID(fmt.Sprintf("anon%d", randInt63()))
-	} else if ok && (len(id) > 0) {
+	if id, ok := maybeId.(ID); maybeId == nil || (ok && id.Value == "") {
+		g.ID = IDLit(fmt.Sprintf("anon%d", randInt63()))
+	} else if ok && id.Value != "" {
 		g.ID = id
+		g.Pos = id.Pos
 	} else {
 		return nil, fmt.Errorf("expected maybeId.(ID) got=%v", maybeId)
 	}
@@ -385,7 +412,7 @@ func PutMap(attrmap map[string]string) AttrList {
 	sort.Strings(keys)
 	for _, name := range keys {
 		value := attrmap[name]
-		attrlist[0] = append(attrlist[0], &Attr{ID(name), ID(value)})
+		attrlist[0] = append(attrlist[0], &Attr{Field: IDLit(name), Value: IDLit(value)})
 	}
 	return attrlist
 }
@@ -436,11 +463,13 @@ func (this AList) Walk(v Visitor) {
 type Attr struct {
 	Field ID
 	Value ID
+	Pos   Pos
 }
 
 func NewAttr(f, v Attrib) (*Attr, error) {
-	a := &Attr{Field: f.(ID)}
-	a.Value = ID("true")
+	field := f.(ID)
+	a := &Attr{Field: field, Pos: field.Pos}
+	a.Value = IDLit("true")
 	if v != nil {
 		ok := false
 		a.Value, ok = v.(ID)
@@ -486,6 +515,7 @@ type EdgeStmt struct {
 	Source  Location
 	EdgeRHS EdgeRHS
 	Attrs   AttrList
+	Pos     Pos
 }
 
 func NewEdgeStmt(id, e, attrs Attrib) (*EdgeStmt, error) {
@@ -499,7 +529,16 @@ func NewEdgeStmt(id, e, attrs Attrib) (*EdgeStmt, error) {
 	} else {
 		a = attrs.(AttrList)
 	}
-	return &EdgeStmt{id.(Location), e.(EdgeRHS), a}, nil
+	src := id.(Location)
+	// Source position: NodeID.Pos for plain nodes, SubGraph.Pos for subgraph sources.
+	var pos Pos
+	switch s := src.(type) {
+	case *NodeID:
+		pos = s.Pos
+	case *SubGraph:
+		pos = s.Pos
+	}
+	return &EdgeStmt{Source: src, EdgeRHS: e.(EdgeRHS), Attrs: a, Pos: pos}, nil
 }
 
 func (this EdgeStmt) String() string {
@@ -523,13 +562,27 @@ func (this EdgeStmt) Walk(v Visitor) {
 type EdgeRHS []*EdgeRH
 
 func NewEdgeRHS(op, id Attrib) (EdgeRHS, error) {
-	return EdgeRHS{&EdgeRH{op.(EdgeOp), id.(Location)}}, nil
+	dst := id.(Location)
+	return EdgeRHS{&EdgeRH{Op: op.(EdgeOp), Destination: dst, Pos: locPos(dst)}}, nil
 }
 
 func AppendEdgeRHS(e, op, id Attrib) (EdgeRHS, error) {
 	erhs := e.(EdgeRHS)
-	erhs = append(erhs, &EdgeRH{op.(EdgeOp), id.(Location)})
+	dst := id.(Location)
+	erhs = append(erhs, &EdgeRH{Op: op.(EdgeOp), Destination: dst, Pos: locPos(dst)})
 	return erhs, nil
+}
+
+// locPos returns the position of a Location (the underlying NodeID's Pos
+// for plain node sources, or the SubGraph's Pos for subgraph sources).
+func locPos(l Location) Pos {
+	switch v := l.(type) {
+	case *NodeID:
+		return v.Pos
+	case *SubGraph:
+		return v.Pos
+	}
+	return Pos{}
 }
 
 func (this EdgeRHS) String() string {
@@ -553,6 +606,7 @@ func (this EdgeRHS) Walk(v Visitor) {
 type EdgeRH struct {
 	Op          EdgeOp
 	Destination Location
+	Pos         Pos
 }
 
 func (this *EdgeRH) String() string {
@@ -571,6 +625,7 @@ func (this *EdgeRH) Walk(v Visitor) {
 type NodeStmt struct {
 	NodeID *NodeID
 	Attrs  AttrList
+	Pos    Pos
 }
 
 func NewNodeStmt(id, attrs Attrib) (*NodeStmt, error) {
@@ -585,7 +640,7 @@ func NewNodeStmt(id, attrs Attrib) (*NodeStmt, error) {
 	} else {
 		a = attrs.(AttrList)
 	}
-	return &NodeStmt{nid, a}, nil
+	return &NodeStmt{NodeID: nid, Attrs: a, Pos: nid.Pos}, nil
 }
 
 func (this NodeStmt) String() string {
@@ -629,25 +684,27 @@ func (this EdgeOp) Walk(v Visitor) {
 type NodeID struct {
 	ID   ID
 	Port Port
+	Pos  Pos
 }
 
 func NewNodeID(id, port Attrib) (*NodeID, error) {
+	idVal := id.(ID)
 	if port == nil {
-		return &NodeID{id.(ID), Port{"", ""}}, nil
+		return &NodeID{ID: idVal, Port: Port{}, Pos: idVal.Pos}, nil
 	}
-	return &NodeID{id.(ID), port.(Port)}, nil
+	return &NodeID{ID: idVal, Port: port.(Port), Pos: idVal.Pos}, nil
 }
 
 func MakeNodeID(id string, port string) *NodeID {
-	p := Port{"", ""}
+	p := Port{}
 	if len(port) > 0 {
 		ps := strings.Split(port, ":")
-		p.ID1 = ID(ps[0])
+		p.ID1 = IDLit(ps[0])
 		if len(ps) > 1 {
-			p.ID2 = ID(ps[1])
+			p.ID2 = IDLit(ps[1])
 		}
 	}
-	return &NodeID{ID(id), p}
+	return &NodeID{ID: IDLit(id), Port: p}
 }
 
 func (this *NodeID) String() string {
@@ -675,12 +732,14 @@ func (this *NodeID) Walk(v Visitor) {
 type Port struct {
 	ID1 ID
 	ID2 ID
+	Pos Pos
 }
 
 func NewPort(id1, id2 Attrib) Port {
-	port := Port{ID(""), ID("")}
+	port := Port{}
 	if id1 != nil {
 		port.ID1 = id1.(ID)
+		port.Pos = port.ID1.Pos
 	}
 	if id2 != nil {
 		port.ID2 = id2.(ID)
@@ -689,11 +748,11 @@ func NewPort(id1, id2 Attrib) Port {
 }
 
 func (this Port) String() string {
-	if len(this.ID1) == 0 {
+	if this.ID1.Value == "" {
 		return ""
 	}
 	s := ":" + this.ID1.String()
-	if len(this.ID2) > 0 {
+	if this.ID2.Value != "" {
 		s += ":" + this.ID2.String()
 	}
 	return s
@@ -708,18 +767,28 @@ func (this Port) Walk(v Visitor) {
 	this.ID2.Walk(v)
 }
 
-type ID string
+// ID is a DOT identifier carrying its lexical position. The zero value
+// ID{} represents an empty/absent identifier.
+type ID struct {
+	Value string
+	Pos   Pos
+}
+
+// IDLit constructs an ID from a literal string with no position info.
+// Use this in code that synthesises IDs outside the parser (writers,
+// builders, etc.).
+func IDLit(s string) ID { return ID{Value: s} }
 
 func NewID(id Attrib) (ID, error) {
 	if id == nil {
-		return ID(""), nil
+		return ID{}, nil
 	}
-	id_lit := string(id.(*token.Token).Lit)
-	return ID(id_lit), nil
+	tok := id.(*token.Token)
+	return ID{Value: string(tok.Lit), Pos: posFromToken(tok)}, nil
 }
 
 func (this ID) String() string {
-	return string(this)
+	return this.Value
 }
 
 func (this ID) Walk(v Visitor) {
